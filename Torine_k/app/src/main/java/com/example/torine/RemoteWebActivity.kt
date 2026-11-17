@@ -6,6 +6,9 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.widget.ImageButton
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * Full-screen, zoomable, pannable WebView.
@@ -17,7 +20,20 @@ class RemoteWebActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.enableEdgeToEdge(window)
         setContentView(R.layout.activity_web)
+
+        // targetSdk 35+ forces edge-to-edge, so keep content clear of the
+        // status bar, navigation bar, display cutout and keyboard on every side.
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.webRoot)) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or
+                        WindowInsetsCompat.Type.displayCutout() or
+                        WindowInsetsCompat.Type.ime()
+            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsetsCompat.CONSUMED
+        }
 
         findViewById<ImageButton>(R.id.backButton).setOnClickListener { finish() }
 
