@@ -212,6 +212,10 @@ class RouteActivity : AppCompatActivity() {
  * matches the screen's long axis. All fit / clamp / draw logic uses the
  * current (rotated) bitmap together with inset-reduced usable bounds —
  * so the image never hides behind the system bars or cutout.
+ *
+ * When the usable area flips between portrait and landscape, zoom is kept
+ * and the image point that was at the usable-area centre is mapped through
+ * the 90° rotation so it stays at the new centre.
  */
 class RouteView(context: Context) : View(context) {
 
@@ -240,6 +244,7 @@ class RouteView(context: Context) : View(context) {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 val factor = detector.scaleFactor
                 scale = (scale * factor).coerceIn(MIN_SCALE, MAX_SCALE)
+                clearSavedFocus()
                 clampTranslation()
                 invalidate()
                 return true
@@ -259,7 +264,9 @@ class RouteView(context: Context) : View(context) {
     fun setSystemInsets(l: Int, t: Int, r: Int, b: Int) {
         if (l == insetLeft && t == insetTop && r == insetRight && b == insetBottom) return
         insetLeft = l; insetTop = t; insetRight = r; insetBottom = b
-        clampTranslation()
+        // Insets often arrive after onSizeChanged on a turn; re-apply the
+        // saved centre point now that the usable area is final.
+        if (!applySavedFocus()) clampTranslation()
         invalidate()
     }
 
@@ -270,8 +277,10 @@ class RouteView(context: Context) : View(context) {
     // -------- orientation-aware bitmap --------
 
     /** The bitmap appropriate for the current orientation, with landscape pre-rotated. */
-    private fun currentBitmap(): Bitmap {
-        if (!isLandscape()) return bitmapPortrait
+    private fun currentBitmap(): Bitmap = bitmapFor(isLandscape())
+
+    private fun bitmapFor(landscape: Boolean): Bitmap {
+        if (!landscape) return bitmapPortrait
         bitmapLandscape?.let { return it }
         val m = Matrix().apply { postRotate(90f) }
         val rotated = Bitmap.createBitmap(
@@ -281,6 +290,57 @@ class RouteView(context: Context) : View(context) {
         )
         bitmapLandscape = rotated
         return rotated
+    }
+
+    // Portrait-image point kept at the usable-area centre across a turn.
+    private var focusPortrait: PointF? = null
+
+    private fun clearSavedFocus() {
+        focusPortrait = null
+    }
+
+    /**
+     * Image point (in unrotated portrait-bitmap coordinates) currently at
+     * the centre of the usable area, for the given view size and insets.
+     *
+     * Landscape is a 90° clockwise rotation of the portrait bitmap:
+     * (lx, ly) = (portraitHeight - py, px), so (px, py) = (ly, portraitHeight - lx).
+     */
+    private fun portraitPointAtUsableCenter(
+        viewW: Int, viewH: Int,
+        iL: Int, iT: Int, iR: Int, iB: Int
+    ): PointF {
+        val landscape = viewW > viewH
+        val bmp = bitmapFor(landscape)
+        val uw = (viewW - iL - iR).coerceAtLeast(1).toFloat()
+        val uh = (viewH - iT - iB).coerceAtLeast(1).toFloat()
+        val s = minOf(uw / bmp.width, uh / bmp.height) * scale
+        val bx = (uw / 2f - transX) / s
+        val by = (uh / 2f - transY) / s
+        return if (landscape) {
+            PointF(by, bitmapPortrait.height - bx)
+        } else {
+            PointF(bx, by)
+        }
+    }
+
+    /** Place [focusPortrait] at the current usable-area centre, then clamp. */
+    private fun applySavedFocus(): Boolean {
+        val focus = focusPortrait ?: return false
+        val bmpX: Float
+        val bmpY: Float
+        if (isLandscape()) {
+            bmpX = bitmapPortrait.height - focus.y
+            bmpY = focus.x
+        } else {
+            bmpX = focus.x
+            bmpY = focus.y
+        }
+        val s = totalScale()
+        transX = usableWidth()  / 2f - bmpX * s
+        transY = usableHeight() / 2f - bmpY * s
+        clampTranslation()
+        return true
     }
 
     fun reloadImage() {
@@ -331,12 +391,17 @@ class RouteView(context: Context) : View(context) {
             val wasLandscape = oldw > oldh
             val nowLandscape = w > h
             if (wasLandscape != nowLandscape) {
-                transX = 0f
-                transY = 0f
+                // Use the old size (and current insets) so the mapping is
+                // based on what was actually on screen before the flip.
+                focusPortrait = portraitPointAtUsableCenter(
+                    oldw, oldh, insetLeft, insetTop, insetRight, insetBottom
+                )
                 if (!nowLandscape) {
                     bitmapLandscape?.recycle()
                     bitmapLandscape = null
                 }
+                applySavedFocus()
+                return
             }
         }
         clampTranslation()
@@ -361,6 +426,7 @@ class RouteView(context: Context) : View(context) {
                     transX += dx
                     transY += dy
                     lastTouch.set(event.x, event.y)
+                    clearSavedFocus()
                     clampTranslation()
                     invalidate()
                 }
